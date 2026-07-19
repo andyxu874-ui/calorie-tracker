@@ -156,7 +156,14 @@
       <button class="close-btn" data-close="libraryModalOverlay">✕</button>
     </div>
     <div class="modal-body">
+      <input type="text" id="librarySearch" class="text-input library-search" placeholder="🔍 搜索本地食物；输入英文可搜加拿大官方数据库">
       <div class="library-list" id="libraryList"></div>
+
+      <div class="cnf-section" id="cnfSection" style="display:none">
+        <h4 class="cnf-title">🍁 加拿大营养数据库（CNF · Health Canada）</h4>
+        <div class="cnf-status" id="cnfStatus"></div>
+        <div class="cnf-results" id="cnfResults"></div>
+      </div>
 
       <div class="add-food-form">
         <h4>自定义食物</h4>
@@ -183,6 +190,47 @@
         </div>
         <p class="hint-text">提示：如果你只知道每 100 克的卡路里，除以 100 即可得到每克卡路里。宏量按每 100 克填写，不填默认为 0。</p>
         <button class="primary-btn" id="addFoodBtn">添加到食物库</button>
+        <button class="add-btn recipe-create-btn" id="openRecipeBtn">🥘 用原料创建菜品（菜谱）</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Recipe modal -->
+<div class="modal-overlay" id="recipeModalOverlay">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3 id="recipeModalTitle">创建菜谱</h3>
+      <button class="close-btn" data-close="recipeModalOverlay">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="add-food-row">
+        <select id="recipeEmoji" class="emoji-select">
+          <option value="🥘">🥘</option>
+          <option value="🍳">🍳</option>
+          <option value="🍲">🍲</option>
+          <option value="🥗">🥗</option>
+          <option value="🍛">🍛</option>
+          <option value="🍜">🍜</option>
+          <option value="🥟">🥟</option>
+          <option value="🍚">🍚</option>
+          <option value="🌯">🌯</option>
+          <option value="🍔">🍔</option>
+        </select>
+        <input type="text" id="recipeName" class="text-input" placeholder="菜品名称，例如 番茄炒蛋">
+      </div>
+
+      <label class="field-label">原料（生重，克）——原料可先在食物库里搜索/导入</label>
+      <div class="recipe-ingredients" id="recipeIngredients"></div>
+      <button class="add-btn" id="addIngredientBtn">+ 添加原料</button>
+
+      <label class="field-label">出锅总重（克，可选）——炒完把整盘称一下更准；留空则按原料总和计算</label>
+      <input type="number" id="recipeCookedWeight" class="text-input" min="0" step="1" placeholder="留空 = 原料总重">
+
+      <div class="meal-summary" id="recipeSummary"></div>
+
+      <div class="modal-actions">
+        <button class="primary-btn" id="saveRecipeBtn">保存到食物库</button>
       </div>
     </div>
   </div>

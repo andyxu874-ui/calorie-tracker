@@ -561,16 +561,32 @@
   });
 
   // ---------- food library modal ----------
+  function foodTag(f) {
+    if (f.recipe) return "菜谱";
+    if (f.source === "cnf") return "🍁 CNF";
+    return f.builtin ? "预设" : "自定义";
+  }
+
   function renderLibrary() {
+    var q = (document.getElementById("librarySearch").value || "").trim().toLowerCase();
+    var terms = q ? q.split(/\s+/) : [];
     var list = document.getElementById("libraryList");
-    list.innerHTML = state.foods.map(function (f) {
+    var foods = state.foods.filter(function (f) {
+      var name = f.name.toLowerCase();
+      return terms.every(function (t) { return name.indexOf(t) >= 0; });
+    });
+    if (!foods.length) {
+      list.innerHTML = '<p class="hint-text">本地库没有匹配的食物。</p>';
+      return;
+    }
+    list.innerHTML = foods.map(function (f) {
       var per100 = round1(f.calPerGram * 100);
       return (
         '<div class="library-row" data-food-id="' + f.id + '">' +
           '<div class="library-emoji">' + f.emoji + "</div>" +
           '<div class="library-info">' +
             '<div class="library-name">' + escapeHtml(f.name) +
-              (f.builtin ? '<span class="library-tag">预设</span>' : '<span class="library-tag">自定义</span>') +
+              '<span class="library-tag">' + foodTag(f) + "</span>" +
             "</div>" +
             '<div class="library-cal">' + f.calPerGram + " kcal/g（约 " + per100 + " kcal/100g）</div>" +
             '<div class="library-cal">每100g：蛋白 ' + round1((f.macros ? f.macros.p : 0) * 100) +
@@ -588,7 +604,132 @@
 
   document.getElementById("openLibraryBtn").addEventListener("click", function () {
     renderLibrary();
+    renderCnfSearch();
     openModal("libraryModalOverlay");
+  });
+
+  document.getElementById("librarySearch").addEventListener("input", function () {
+    renderLibrary();
+    renderCnfSearch();
+  });
+
+  // ---------- CNF (Canadian Nutrient File, Health Canada) ----------
+  var CNF_BASE = "https://food-nutrition.canada.ca/api/canadian-nutrient-file/";
+  var CNF_CACHE_KEY = "calorieApp_cnfList_v1";
+  var cnfList = null;      // [[food_code, description], ...]
+  var cnfLoading = false;
+  var cnfLoadError = null;
+
+  function setCnfStatus(msg) {
+    document.getElementById("cnfStatus").textContent = msg;
+  }
+
+  function cnfEnsureList(onReady) {
+    if (cnfList) { onReady(); return; }
+    try {
+      var raw = localStorage.getItem(CNF_CACHE_KEY);
+      if (raw) { cnfList = JSON.parse(raw); onReady(); return; }
+    } catch (e) { /* fall through to network */ }
+    if (cnfLoading) return;
+    cnfLoading = true;
+    cnfLoadError = null;
+    setCnfStatus("首次使用：正在下载食物列表（约 5,700 种，只需一次）…");
+    fetch(CNF_BASE + "food/?lang=en&type=json")
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (arr) {
+        cnfList = arr.map(function (x) { return [x.food_code, x.food_description]; });
+        try { localStorage.setItem(CNF_CACHE_KEY, JSON.stringify(cnfList)); } catch (e) { /* cache miss is fine */ }
+        cnfLoading = false;
+        onReady();
+      })
+      .catch(function (err) {
+        cnfLoading = false;
+        cnfLoadError = err;
+        setCnfStatus("下载失败（" + err.message + "），请检查网络后重新输入搜索词。");
+      });
+  }
+
+  function renderCnfSearch() {
+    var q = (document.getElementById("librarySearch").value || "").trim();
+    var section = document.getElementById("cnfSection");
+    var results = document.getElementById("cnfResults");
+    if (q.length < 2) {
+      section.style.display = "none";
+      results.innerHTML = "";
+      return;
+    }
+    section.style.display = "";
+    cnfEnsureList(function () {
+      // this callback may fire after the user changed the query — re-read it
+      var query = (document.getElementById("librarySearch").value || "").trim().toLowerCase();
+      if (query.length < 2) return;
+      var terms = query.split(/\s+/);
+      var hits = [];
+      for (var i = 0; i < cnfList.length && hits.length < 20; i++) {
+        var desc = cnfList[i][1].toLowerCase();
+        var all = true;
+        for (var t = 0; t < terms.length; t++) {
+          if (desc.indexOf(terms[t]) < 0) { all = false; break; }
+        }
+        if (all) hits.push(cnfList[i]);
+      }
+      if (!hits.length) {
+        setCnfStatus("没有匹配结果。CNF 是英文数据库，请用英文搜索（例如 chicken breast、tomato raw）。");
+        results.innerHTML = "";
+        return;
+      }
+      setCnfStatus(hits.length >= 20 ? "显示前 20 条，可输入更具体的关键词" : hits.length + " 条结果，点击导入到本地库");
+      results.innerHTML = hits.map(function (h) {
+        var imported = state.foods.some(function (f) { return f.cnfCode === h[0]; });
+        return '<div class="cnf-row" data-cnf-code="' + h[0] + '">' +
+          "<span>" + escapeHtml(h[1]) + "</span>" +
+          '<span class="cnf-import-hint">' + (imported ? "已导入 ✓" : "+ 导入") + "</span>" +
+        "</div>";
+      }).join("");
+    });
+  }
+
+  document.getElementById("cnfResults").addEventListener("click", function (e) {
+    var row = e.target.closest(".cnf-row");
+    if (!row) return;
+    var code = parseInt(row.dataset.cnfCode, 10);
+    if (state.foods.some(function (f) { return f.cnfCode === code; })) return;
+    var pair = null;
+    for (var i = 0; i < cnfList.length; i++) if (cnfList[i][0] === code) { pair = cnfList[i]; break; }
+    if (!pair) return;
+    row.querySelector(".cnf-import-hint").textContent = "导入中…";
+    fetch(CNF_BASE + "nutrientamount/?id=" + code + "&lang=en&type=json")
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (arr) {
+        // CNF values are per 100 g edible portion; ids: 208 kcal, 203 protein, 204 fat, 205 carb
+        function get(id) {
+          for (var i = 0; i < arr.length; i++) if (arr[i].nutrient_name_id === id) return arr[i].nutrient_value;
+          return 0;
+        }
+        var kcal = get(208), p = get(203), fat = get(204), c = get(205);
+        if (!kcal) kcal = p * 4 + c * 4 + fat * 9;
+        state.foods.push({
+          id: uid(),
+          name: pair[1],
+          emoji: "🍁",
+          calPerGram: Math.round(kcal) / 100,
+          macros: {
+            p: Math.round(p * 100) / 10000,
+            c: Math.round(c * 100) / 10000,
+            f: Math.round(fat * 100) / 10000
+          },
+          source: "cnf",
+          cnfCode: code,
+          builtin: false
+        });
+        saveState();
+        renderLibrary();
+        renderCnfSearch();
+      })
+      .catch(function (err) {
+        row.querySelector(".cnf-import-hint").textContent = "+ 导入";
+        window.alert("导入失败：" + err.message + "，请重试。");
+      });
   });
 
   document.getElementById("libraryList").addEventListener("click", function (e) {
@@ -602,6 +743,18 @@
         window.alert("这个食物正在被今天的某个餐次使用，无法删除。请先从餐次中移除它。");
         return;
       }
+      var usingRecipe = null;
+      for (var ri = 0; ri < state.foods.length; ri++) {
+        var rf = state.foods[ri];
+        if (rf.recipe && rf.recipe.ingredients.some(function (ing) { return ing.foodId === foodId; })) {
+          usingRecipe = rf;
+          break;
+        }
+      }
+      if (usingRecipe) {
+        window.alert('这个食物是菜谱"' + usingRecipe.name + '"的原料，无法删除。请先修改该菜谱。');
+        return;
+      }
       if (!window.confirm('确定要删除"' + food.name + '"吗？')) return;
       state.foods = state.foods.filter(function (f) { return f.id !== foodId; });
       renderLibrary();
@@ -610,6 +763,10 @@
     }
 
     if (e.target.classList.contains("edit-food-btn")) {
+      if (food.recipe) {
+        openRecipeModal(food);
+        return;
+      }
       var info = row.querySelector(".library-info");
       var mac = food.macros || { p: 0, c: 0, f: 0 };
       info.innerHTML =
@@ -680,6 +837,184 @@
     fEl.value = "";
     renderLibrary();
     saveState();
+  });
+
+  // ---------- recipe modal ----------
+  // draft: { foodId: null | existing food id, ingredients: [{foodId, grams}], cookedWeight: null|number }
+  var recipeDraft = null;
+
+  function openRecipeModal(existingFood) {
+    if (existingFood) {
+      recipeDraft = {
+        foodId: existingFood.id,
+        ingredients: existingFood.recipe.ingredients.map(function (ing) {
+          return { foodId: ing.foodId, grams: ing.grams };
+        }),
+        cookedWeight: existingFood.recipe.cookedWeight
+      };
+      document.getElementById("recipeName").value = existingFood.name;
+      document.getElementById("recipeModalTitle").textContent = "编辑菜谱";
+      var emojiSel = document.getElementById("recipeEmoji");
+      emojiSel.value = existingFood.emoji;
+      if (emojiSel.value !== existingFood.emoji) emojiSel.selectedIndex = 0;
+    } else {
+      recipeDraft = { foodId: null, ingredients: [{ foodId: state.foods[0].id, grams: 0 }], cookedWeight: null };
+      document.getElementById("recipeName").value = "";
+      document.getElementById("recipeModalTitle").textContent = "创建菜谱";
+      document.getElementById("recipeEmoji").selectedIndex = 0;
+    }
+    document.getElementById("recipeCookedWeight").value = recipeDraft.cookedWeight || "";
+    renderRecipeIngredients();
+    renderRecipeSummary();
+    openModal("recipeModalOverlay");
+  }
+
+  function ingredientOptionsHtml(selectedId) {
+    return state.foods.filter(function (f) {
+      return f.id !== recipeDraft.foodId; // a recipe cannot contain itself
+    }).map(function (f) {
+      return '<option value="' + f.id + '"' + (f.id === selectedId ? " selected" : "") + ">" +
+        f.emoji + " " + escapeHtml(f.name) + "</option>";
+    }).join("");
+  }
+
+  function renderRecipeIngredients() {
+    var box = document.getElementById("recipeIngredients");
+    box.innerHTML = recipeDraft.ingredients.map(function (ing, idx) {
+      var cal = ing.grams * getFood(ing.foodId).calPerGram;
+      return (
+        '<div class="food-item-row recipe-ing-row" data-idx="' + idx + '">' +
+          '<div class="food-item-top">' +
+            '<select class="food-select ing-select">' + ingredientOptionsHtml(ing.foodId) + "</select>" +
+            '<input type="number" class="grams-number ing-grams" min="0" step="1" value="' + (ing.grams || "") + '">' +
+            '<span class="unit-g">g</span>' +
+            '<span class="item-kcal ing-kcal">' + Math.round(cal) + " kcal</span>" +
+            '<button class="remove-item-btn ing-remove" title="删除">✕</button>' +
+          "</div>" +
+        "</div>"
+      );
+    }).join("") || '<p class="hint-text">点击下方按钮添加原料。</p>';
+  }
+
+  function recipeTotals() {
+    var rawTotal = 0, cal = 0, p = 0, c = 0, f = 0;
+    recipeDraft.ingredients.forEach(function (ing) {
+      if (!(ing.grams > 0)) return;
+      var food = getFood(ing.foodId);
+      var m = food.macros || { p: 0, c: 0, f: 0 };
+      rawTotal += ing.grams;
+      cal += ing.grams * food.calPerGram;
+      p += ing.grams * m.p;
+      c += ing.grams * m.c;
+      f += ing.grams * m.f;
+    });
+    var cooked = recipeDraft.cookedWeight > 0 ? recipeDraft.cookedWeight : rawTotal;
+    return { rawTotal: rawTotal, cal: cal, p: p, c: c, f: f, cooked: cooked };
+  }
+
+  function renderRecipeSummary() {
+    var t = recipeTotals();
+    var summary = document.getElementById("recipeSummary");
+    if (t.rawTotal <= 0) {
+      summary.innerHTML = '<div class="meal-summary-row"><span>合计</span><span>请先输入原料克数</span></div>';
+      return;
+    }
+    var per100 = t.cooked > 0 ? 100 / t.cooked : 0;
+    summary.innerHTML =
+      '<div class="meal-summary-row">' +
+        "<span>原料合计</span>" +
+        '<span class="meal-summary-total">' + Math.round(t.rawTotal) + " g · " + Math.round(t.cal) + " kcal</span>" +
+      "</div>" +
+      '<div class="meal-summary-row meal-summary-macros">' +
+        "<span>成品按 " + Math.round(t.cooked) + " g 计</span>" +
+        "<span>每100g：" + Math.round(t.cal * per100) + " kcal · 蛋白 " + round1(t.p * per100) +
+        " · 碳水 " + round1(t.c * per100) + " · 脂肪 " + round1(t.f * per100) + " g</span>" +
+      "</div>";
+  }
+
+  document.getElementById("openRecipeBtn").addEventListener("click", function () {
+    openRecipeModal(null);
+  });
+
+  document.getElementById("addIngredientBtn").addEventListener("click", function () {
+    recipeDraft.ingredients.push({ foodId: state.foods[0].id, grams: 0 });
+    renderRecipeIngredients();
+    renderRecipeSummary();
+  });
+
+  document.getElementById("recipeIngredients").addEventListener("change", function (e) {
+    var row = e.target.closest(".recipe-ing-row");
+    if (!row) return;
+    var idx = parseInt(row.dataset.idx, 10);
+    if (e.target.classList.contains("ing-select")) {
+      recipeDraft.ingredients[idx].foodId = e.target.value;
+      renderRecipeIngredients();
+      renderRecipeSummary();
+    }
+  });
+
+  document.getElementById("recipeIngredients").addEventListener("input", function (e) {
+    var row = e.target.closest(".recipe-ing-row");
+    if (!row) return;
+    var idx = parseInt(row.dataset.idx, 10);
+    if (e.target.classList.contains("ing-grams")) {
+      var g = parseFloat(e.target.value);
+      recipeDraft.ingredients[idx].grams = isNaN(g) || g < 0 ? 0 : g;
+      var ing = recipeDraft.ingredients[idx];
+      row.querySelector(".ing-kcal").textContent =
+        Math.round(ing.grams * getFood(ing.foodId).calPerGram) + " kcal";
+      renderRecipeSummary();
+    }
+  });
+
+  document.getElementById("recipeIngredients").addEventListener("click", function (e) {
+    if (!e.target.classList.contains("ing-remove")) return;
+    var row = e.target.closest(".recipe-ing-row");
+    recipeDraft.ingredients.splice(parseInt(row.dataset.idx, 10), 1);
+    renderRecipeIngredients();
+    renderRecipeSummary();
+  });
+
+  document.getElementById("recipeCookedWeight").addEventListener("input", function (e) {
+    var v = parseFloat(e.target.value);
+    recipeDraft.cookedWeight = isNaN(v) || v <= 0 ? null : v;
+    renderRecipeSummary();
+  });
+
+  document.getElementById("saveRecipeBtn").addEventListener("click", function () {
+    var name = document.getElementById("recipeName").value.trim();
+    if (!name) { window.alert("请输入菜品名称"); return; }
+    var ings = recipeDraft.ingredients.filter(function (ing) { return ing.grams > 0; });
+    if (!ings.length) { window.alert("请至少添加一种原料并输入克数"); return; }
+    var t = recipeTotals();
+    if (!(t.cooked > 0)) { window.alert("成品重量无效"); return; }
+    var calPerGram = Math.round(t.cal / t.cooked * 100) / 100;
+    var macros = {
+      p: Math.round(t.p / t.cooked * 10000) / 10000,
+      c: Math.round(t.c / t.cooked * 10000) / 10000,
+      f: Math.round(t.f / t.cooked * 10000) / 10000
+    };
+    var emoji = document.getElementById("recipeEmoji").value;
+    var recipeData = { ingredients: ings, cookedWeight: recipeDraft.cookedWeight };
+    if (recipeDraft.foodId) {
+      var food = getFood(recipeDraft.foodId);
+      food.name = name;
+      food.emoji = emoji;
+      food.calPerGram = calPerGram;
+      food.macros = macros;
+      food.recipe = recipeData;
+    } else {
+      state.foods.push({
+        id: uid(), name: name, emoji: emoji,
+        calPerGram: calPerGram, macros: macros,
+        recipe: recipeData, builtin: false
+      });
+    }
+    saveState();
+    closeModal("recipeModalOverlay");
+    renderLibrary();
+    renderMeals();
+    renderRing();
   });
 
   // ---------- modal close wiring ----------
